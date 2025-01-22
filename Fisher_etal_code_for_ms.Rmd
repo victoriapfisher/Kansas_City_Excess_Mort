@@ -1,0 +1,723 @@
+---
+title: "Code_For_KC_MS"
+author: "Victoria Fisher"
+date: "2025-01-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Libraries and Data
+
+```{r}
+library(pacman)
+p_load(tidyverse,
+       tidycensus,
+       ggplot2,
+       gtsummary,
+       DescTools,
+       datawizard,
+       performance,
+       stats,
+       glmmTMB,
+       zctaCrosswalk)
+
+#Mortality Data
+
+load('[project folder here]/all_deaths_2015.rda')
+load('[project folder here]/all_deaths_2016.rda')
+load('[project folder here]/all_deaths_2017.rda')
+load('[project folder here]/all_deaths_2018.rda')
+load('[project folder here]/all_deaths_2019.rda')
+load('[project folder here]/all_deaths_2020.rda')
+load('[project folder here]/all_deaths_2021.rda')
+
+
+#NaNDA Data
+
+load("[project folder here]/nanda_socioecon_2020.rda")
+
+socio_econ <- da38528.0005 #rename
+
+#Crosswalk data
+
+load("[project folder here]/ZCTA_county.rda")
+
+load("[project folder here]/county_state.rda")
+
+```
+
+#Pre-COVID Mortality
+
+```{r}
+
+all_deaths_2015$Year <- "2015"
+all_deaths_2016$Year <- "2016"
+all_deaths_2017$Year <- "2017"
+all_deaths_2018$Year <- "2018"
+all_deaths_2019$Year <- "2019"
+
+pre_covid_mort <- rbind(all_deaths_2015, all_deaths_2016, all_deaths_2017, all_deaths_2018, all_deaths_2019)
+
+pre_covid_mort <- separate_wider_delim(pre_covid_mort, col = 2, delim = ", ", names = c("County", "State"))
+
+pre_covid_mort$County <- as.factor(pre_covid_mort$County)
+
+pre_covid_mort$State <- as.factor(pre_covid_mort$State)
+
+#Filtering to Kansas City Metro Area Counties
+pre_covid_mort <- filter(pre_covid_mort, County == "Jackson County" & State == "MO" | County == "Johnson County" & State == "KS" | County == "Clay County" & State == "MO" | County == "Wyandotte County" | County == "Cass County" | County == "Platte County" | County == "Miami County" | County ==  "Leavenworth County" | County == "Lafayette County" | County == "Ray County" | County == "Clinton County" | County == "Bates County" | County == "Linn County" & State == "KS" | County == "Caldwell County")
+
+pre_covid_mort <- droplevels(pre_covid_mort)
+
+colnames(pre_covid_mort)[7] <- "crude_rate"
+colnames(pre_covid_mort)[4] <- "GEOID"
+
+pre_covid_mort$crude_rate <- as.numeric(pre_covid_mort$crude_rate)
+
+#Adding older age
+
+#Adding predictors of mortality
+v2015 <- load_variables(2015, "acs5")
+
+vars <- c(total_pop = "B01003_001", 
+          male_70_74 = "B01001_022",
+          male_75_79 = "B01001_023",
+          male_80_84 = "B01001_024",
+          male_85_plus = "B01001_025",
+          female_70_74 = "B01001_046",
+          female_75_79 = "B01001_047",
+          female_80_84 = "B01001_048",
+          female_85_plus = "B01001_049"
+          )
+
+#Pulling age
+years <- 2015:2019 #pulls 5-year estimate American Community Survey data from 2015 - 2019
+names(years) <- years
+mort_vars <- purrr::map_dfr(years, ~{
+  get_acs(
+    geography = "County", 
+    variables = vars, 
+    geometry = FALSE,
+    year = .x
+    )
+}, .id = "year")
+
+mort_vars <- mort_vars %>%
+  pivot_wider(id_cols = c("year", "GEOID"),
+              names_from = c("variable"),
+              values_from = "estimate")
+
+mort_vars$older_age <- rowSums(mort_vars[, 3:10])
+
+mort_vars <- mort_vars %>% dplyr::select(!c(3:10))
+
+mort_vars$P_older_age <- (mort_vars$older_age / mort_vars$total_pop) * 100
+
+colnames(pre_covid_mort)[4] <- "GEOID"
+
+pre_covid_mort <- merge(pre_covid_mort, mort_vars, by.x = c("GEOID", "Year") , by.y = c("GEOID", "year"))
+
+```
+
+#COVID_era mortality
+
+```{r}
+#Observed data
+
+#2020 all deaths
+
+all_deaths_2020 <- separate_wider_delim(all_deaths_2020, col = 2, delim = ", ", names = c("County", "State"))
+
+all_deaths_2020 <- filter(all_deaths_2020, County == "Jackson County" & State == "MO" | County == "Johnson County" & State == "KS" | County == "Clay County" & State == "MO" | County == "Wyandotte County" | County == "Cass County" | County == "Platte County" | County == "Miami County" | County ==  "Leavenworth County" | County == "Lafayette County" | County == "Ray County" | County == "Clinton County" | County == "Bates County" | County == "Linn County" & State == "KS" | County == "Caldwell County")
+
+colnames(all_deaths_2020)[7] <- "crude_rate"
+
+all_deaths_2020$Year <- "2020"
+colnames(all_deaths_2020)[4] <- "GEOID"
+
+
+#2021 all deaths
+
+all_deaths_2021 <- separate_wider_delim(all_deaths_2021, col = 2, delim = ", ", names = c("County", "State"))
+
+all_deaths_2021 <- filter(all_deaths_2021, County == "Jackson County" & State == "MO" | County == "Johnson County" & State == "KS" | County == "Clay County" & State == "MO" | County == "Wyandotte County" | County == "Cass County" | County == "Platte County" | County == "Miami County" | County ==  "Leavenworth County" | County == "Lafayette County" | County == "Ray County" | County == "Clinton County" | County == "Bates County" | County == "Linn County" & State == "KS" | County == "Caldwell County")
+
+colnames(all_deaths_2021)[7] <- "crude_rate"
+
+all_deaths_2021$Year <- "2021"
+
+colnames(all_deaths_2021)[4] <- "GEOID"
+
+
+#Adding COVID-era older age (mortality adjustment)
+v2020 <- load_variables(2020, "acs5")
+
+vars <- c(total_pop = "B01003_001", 
+          male_70_74 = "B01001_022",
+          male_75_79 = "B01001_023",
+          male_80_84 = "B01001_024",
+          male_85_plus = "B01001_025",
+          female_70_74 = "B01001_046",
+          female_75_79 = "B01001_047",
+          female_80_84 = "B01001_048",
+          female_85_plus = "B01001_049"
+          )
+#Adding drove alone
+years <- 2020:2021 #pulls American Community Survey data from 2020 - 2021
+names(years) <- years
+mort_vars_20_21 <- purrr::map_dfr(years, ~{
+  get_acs(
+    geography = "County", 
+    variables = vars, 
+    geometry = FALSE,
+    year = .x
+    )
+}, .id = "year")
+
+mort_vars_20_21 <- mort_vars_20_21 %>%
+  pivot_wider(id_cols = c("year", "GEOID"),
+              names_from = c("variable"),
+              values_from = "estimate")
+
+mort_vars_20_21$older_age <- rowSums(mort_vars_20_21[, 3:10])
+
+mort_vars_20_21 <- mort_vars_20_21 %>% dplyr::select(!c(3:10))
+
+mort_vars_20_21$P_older_age <- (mort_vars_20_21$older_age / mort_vars_20_21$total_pop) * 100
+
+older_age_20 <- filter(mort_vars_20_21, year == 2020)
+
+all_deaths_2020 <- merge(all_deaths_2020, older_age_20, by.x = c("GEOID", "Year") , by.y = c("GEOID", "year"))
+
+older_age_21 <- filter(mort_vars_20_21, year == 2021)
+
+all_deaths_2021 <- merge(all_deaths_2021, older_age_21, by.x = c("GEOID", "Year") , by.y = c("GEOID", "year"))
+
+
+```
+
+#Regression for predicting expected deaths in 2020 and 2021
+
+```{r}
+#Deaths predicted 2020
+
+glm_fit <- glmmTMB(Deaths ~ P_older_age + offset(log(Population)) + (1 | Year) + (1 | County), family = "nbinom1", pre_covid_mort)
+pred_df <- data.frame(Deaths = predict(glm_fit, pre_covid_mort, type = "response"), County = pre_covid_mort$County, Year = pre_covid_mort$Year)
+
+#predicted raw deaths 2020
+
+train_2020 <- all_deaths_2020 %>% dplyr::select(!c("Deaths"))
+
+predict.m1b.2020 <- data.frame(exp_deaths = predict(glm_fit, newdata = train_2020, type = "response", allow.new.levels = TRUE), GEOID = unique(pre_covid_mort$GEOID), Year = "2020")
+
+#predicted raw deaths 2021
+train_2021 <- all_deaths_2021 %>% dplyr::select(!c("Deaths"))
+
+predict.m1b.2021 <- data.frame(exp_deaths = predict(glm_fit, newdata = train_2021, type = "response", allow.new.levels = TRUE), GEOID = unique(pre_covid_mort$GEOID), Year = "2021")
+
+
+#Excess mortality
+
+df_exp_deaths <- rbind(predict.m1b.2020, predict.m1b.2021)
+
+df_obs_deaths <- rbind(all_deaths_2020, all_deaths_2021)
+
+df_excess_mort <- merge(df_obs_deaths, df_exp_deaths, by = c("Year", "GEOID"))
+
+df_excess_mort$excess_mortality <- df_excess_mort$Deaths - df_excess_mort$exp_deaths
+
+```
+
+#ZCTA and County Crosswalks
+
+```{r}
+
+#Edit County-State dataframe
+
+county_state <- separate_wider_delim(county_state, col = 1, delim = ", ", names = c("County", "State"))
+
+county_state$County <- as.factor(county_state$County)
+
+county_state$State <- as.factor(county_state$State)
+
+colnames(county_state)[3] <- "GEOID_COUNTY_20"
+
+county_state$GEOID_COUNTY_20 <- as.factor(county_state$GEOID_COUNTY_20)
+
+county_state <- county_state %>%dplyr::select(c(1:3))
+
+county_state <- county_state %>% distinct(GEOID_COUNTY_20, State, County)
+
+#Merge zcta and county
+
+county_state_zcta <- merge(ZCTA_County, county_state, by = "GEOID_COUNTY_20")
+
+#Merge with socioecon
+
+socio_zcta_county_state <- merge(county_state_zcta, socio_econ, by = "ZCTA20")
+
+#Reduce to KCMA
+
+states <- c("Kasnas", "Missouri")
+
+ks_zcta <- as.data.frame(get_zctas_by_state("Kansas"))
+mo_zcta <- as.data.frame(get_zctas_by_state("Missouri"))
+
+counties <- c("Jackson County", "Johnson County", "Clay County", "Wyandotte County", "Cass County","Platte County", "Miami County", "Leavenworth County", "Lafayette County", "Ray County", "Clinton County", "Bates County", "Linn County", "Caldwell County")
+
+colnames(ks_zcta)[1] <- "ZCTA20"
+colnames(mo_zcta)[1] <- "ZCTA20"
+
+ks_zcta$State <- "KS"
+mo_zcta$State <- "MO"
+
+ks_mo_ZCTA <- rbind(ks_zcta, mo_zcta)
+
+ks_mo_ZCTA$ZCTA20 <- as.factor(ks_mo_ZCTA$ZCTA20)
+ks_mo_ZCTA$State <- as.factor(ks_mo_ZCTA$State)
+
+socio_ks_mo <- merge(socio_zcta_county_state, ks_mo_ZCTA, by = c("ZCTA20", "State"))
+
+colnames(socio_ks_mo)[12] <- "County_fac"
+
+socio_ks_mo$County_fac <- as.factor(socio_ks_mo$County_fac)
+
+#ZCTA level dataset
+
+df_kcma_zcta <- filter(socio_ks_mo, County_fac == "Jackson County" & State == "MO" | County_fac == "Johnson County" & State == "KS" | County_fac == "Clay County" & State == "MO" | County_fac == "Wyandotte County" & State == "KS" | County_fac == "Cass County" & State == "MO" | County_fac == "Platte County" | County_fac == "Miami County" & State == "KS" | County_fac ==  "Leavenworth County" & State == "KS" | County_fac == "Lafayette County"  | County_fac == "Ray County" & State == "MO"  | County_fac == "Clinton County" | County_fac == "Bates County" & State == "MO" | County_fac == "Linn County" & State == "KS" | County_fac == "Caldwell County" & State == "MO" )
+
+```
+
+#Excess mortality dataset
+
+```{r}
+
+df_excess_mort$County <- as.factor(df_excess_mort$County)
+df_excess_mort$State <- as.factor(df_excess_mort$State)
+
+colnames(df_kcma_zcta)[3] <- "GEOID"
+
+df_kcma_zcta_mort <- merge(df_excess_mort, df_kcma_zcta, by = c("GEOID", "County", "State"))
+
+```
+
+#ASC Variables
+
+```{r}
+
+df_zcta <- df_kcma_zcta_mort
+
+v2020 <- load_variables(2020, "acs5")
+
+vars <- c(zcta_pop = "B01003_001",
+          zcta_male_pop = "B01001_002", 
+          zcta_work_from_home = "B08006_017",
+          zcta_tot_pub_assist = "B09010_002",
+          zcta_medincome = "B07011_001",
+          zcta_medicaid_under19 = "B27010_006",
+          zcta_medicaid_19_34 = "B27010_022",
+          zcta_medicaid_35_64 = "B27010_038",
+          zcta_medicaid_over64 = "B27010_055",
+          zcta_tenure_total = "B25003_001",
+          zcta_owner_occ = "B25003_002",
+          zcta_did_not_wfh = "B99084_002"
+          )
+#Adding drove alone
+years <- 2020:2021 #pulls American Community Survey data from 2019 - 2021
+names(years) <- years
+zcta_acs_vars <- purrr::map_dfr(years, ~{
+  get_acs(
+    geography = "zcta", 
+    variables = vars, 
+    geometry = TRUE,
+    year = .x
+    )
+}, .id = "year")
+
+colnames(zcta_acs_vars)[2] <- "ZCTA20"
+colnames(zcta_acs_vars)[1] <- "Year"
+
+zcta_acs_vars <- zcta_acs_vars %>%
+  pivot_wider(id_cols = c("Year", "ZCTA20", "geometry"),
+              names_from = c("variable"),
+              values_from = "estimate")
+
+
+zcta_acs_vars$ZCTA20 <- as.factor(zcta_acs_vars$ZCTA20)
+zcta_acs_vars$Year <- as.factor(zcta_acs_vars$Year)
+
+zcta_acs_vars$medicaid_only <- zcta_acs_vars$zcta_medicaid_under19 + zcta_acs_vars$zcta_medicaid_19_34 + zcta_acs_vars$zcta_medicaid_35_64 + zcta_acs_vars$zcta_medicaid_over64
+
+zcta_acs_vars <- zcta_acs_vars %>% dplyr::select(!c("zcta_medicaid_under19", "zcta_medicaid_19_34", "zcta_medicaid_35_64", "zcta_medicaid_over64"))
+
+df_zcta$Year <- as.factor(df_zcta$Year)
+
+df_zcta <- left_join(df_zcta, zcta_acs_vars, by = c("ZCTA20", "Year"))
+summary(is.na(df_zcta))
+
+#Removing variables with high missingness 
+df_zcta <- df_zcta %>% select(!c("MEDFAMINC_NHWHITE16_20", "PFAMINCGE40LT75K16_20", "PFAMINCGE75LT125K16_20", "PFAMINCLT40K16_20", "PFAMINCGE125K16_20", "MEDFAMINC_BLACK16_20", "RATIO_MEDFAMINC_NHWTOHISP16_20", "RATIO_MEDFAMINC_NHWTOB16_20", "MEDFAMINC_HISPANIC16_20", "PSNGPNT16_20", "PFHFAM16_20"))
+
+df_zcta <- df_zcta %>% relocate(c(zcta_medincome, zcta_owner_occ, zcta_tenure_total), .before = zcta_male_pop)
+
+percent_cols <- names(df_zcta[, 63:67])
+
+df_zcta <- df_zcta %>%
+  mutate(across(all_of(percent_cols), ~ (. / zcta_pop) * 100, .names = "P_{.col}"))
+
+df_zcta <- df_zcta %>%
+  mutate(across(ends_with("16_20"), ~ .x * 100, .names = "P_{.col}"))
+
+df_zcta$P_owner_occ <- (df_zcta$zcta_owner_occ / df_zcta$zcta_tenure_total) * 100
+
+df_zcta$P_not_owner_occ <- 100 - df_zcta$P_owner_occ
+
+df_zcta$P_no_bach <- 100 - df_zcta$P_PED3_16_20
+
+
+#Removing rows with high missingness 
+
+df_zcta.na <- df_zcta %>% filter(!is.na(MEDFAMINC16_20))
+
+df_zcta.na <- df_zcta.na %>% filter(!is.na(zcta_medincome))
+
+df_zcta.na$stnd_medincome <- standardise(df_zcta.na$zcta_medincome)
+
+```
+
+#Removing duplicates
+
+```{r}
+length(unique(df_zcta.na$ZCTA20))
+
+df_zcta.na$zcta_num <- as.numeric((as.character(df_zcta.na$ZCTA20)))
+
+df_2020 <- filter(df_zcta.na, Year == "2020")
+
+df_dupe <- df_2020 %>% dplyr::distinct(zcta_num, County)
+
+df_dupe <- df_dupe %>%
+   group_by(zcta_num) %>%
+   filter(n()>1)
+
+length(unique(df_dupe$zcta_num))
+length(unique(df_zcta.na$zcta_num))
+
+df_dedupe <- filter(df_dupe, zcta_num == "64017" & County == "Ray County" | zcta_num == "64024" & County == "Clay County" | zcta_num == "64034" & County == "Jackson County" | zcta_num == "64048" & County == "Clay County" |  zcta_num == "64061" & County == "Johnson County" | zcta_num == "64062" & County == "Ray County" | zcta_num == "64075" & County == "Jackson County" | zcta_num == "64077" & County == "Ray County" | zcta_num == "64080" & County == "Cass County" | zcta_num == "64082" & County == "Jackson County" | zcta_num == "64089" & County == "Clay County" | zcta_num == "64118" & County == "Clay County" |  zcta_num == "64147" & County == "Jackson County" | zcta_num == "64150" & County == "Platte County" | zcta_num == "64151" & County == "Platte County" | zcta_num == "64155" & County == "Clay County" | zcta_num == "64429" & County == "Clinton County" | zcta_num == "64444" & County == "Platte County" | zcta_num == "64465" & County == "Clinton County" | zcta_num == "64492" & County == "Clinton County" | zcta_num == "64624" & County == "Caldwell County" | zcta_num == "64637" & County == "Caldwell County" | zcta_num == "64671" & County == "Caldwell County" | zcta_num == "64725" & County == "Cass County" | zcta_num == "64742" & County == "Cass County" | zcta_num == "66012" & County == "Wyandotte County" | zcta_num == "66013" & County == "Johnson County" | zcta_num == "66021" & County == "Johnson County" | zcta_num == "66026" & County == "Miami County" | zcta_num == "66040" & County == "Linn County" | zcta_num == "66072" & County == "Linn County" | zcta_num == "66083" & County == "Johnson County" | zcta_num == "66109" & County == "Wyandotte County" | zcta_num == "66216" & County == "Johnson County")
+
+to_remove <- filter(df_dupe, !(zcta_num == "64017" & County == "Ray County" | zcta_num == "64024" & County == "Clay County" | zcta_num == "64034" & County == "Jackson County" | zcta_num == "64048" & County == "Clay County" |  zcta_num == "64061" & County == "Johnson County" | zcta_num == "64062" & County == "Ray County" | zcta_num == "64075" & County == "Jackson County" | zcta_num == "64077" & County == "Ray County" | zcta_num == "64080" & County == "Cass County" | zcta_num == "64082" & County == "Jackson County" | zcta_num == "64089" & County == "Clay County" | zcta_num == "64118" & County == "Clay County" |  zcta_num == "64147" & County == "Jackson County" | zcta_num == "64150" & County == "Platte County" | zcta_num == "64151" & County == "Platte County" | zcta_num == "64155" & County == "Clay County" | zcta_num == "64429" & County == "Clinton County" | zcta_num == "64444" & County == "Platte County" | zcta_num == "64465" & County == "Clinton County" | zcta_num == "64492" & County == "Clinton County" | zcta_num == "64624" & County == "Caldwell County" | zcta_num == "64637" & County == "Caldwell County" | zcta_num == "64671" & County == "Caldwell County" | zcta_num == "64725" & County == "Cass County" | zcta_num == "64742" & County == "Cass County" | zcta_num == "66012" & County == "Wyandotte County" | zcta_num == "66013" & County == "Johnson County" | zcta_num == "66021" & County == "Johnson County" | zcta_num == "66026" & County == "Miami County" | zcta_num == "66040" & County == "Linn County" | zcta_num == "66072" & County == "Linn County" | zcta_num == "66083" & County == "Johnson County" | zcta_num == "66109" & County == "Wyandotte County" | zcta_num == "66216" & County == "Johnson County"))
+
+length(unique(to_remove$zcta_num))
+
+df_zcta.na <- anti_join(df_zcta.na, to_remove, by = c("zcta_num", "County"))
+
+length(unique(df_zcta.na$ZCTA20))
+
+table(df_zcta.na$Year)
+
+table(df_zcta.na$ZCTA20)
+
+df_zcta.na <- filter(df_zcta.na, !(ZCTA20 == "64149" | ZCTA20 == "64066" | ZCTA20 == "64167"))
+
+table(df_zcta.na$Year) #210 both years
+
+
+```
+
+#Estimating excess mortality at the ZIP level
+
+```{r}
+#ZIP-code risk score
+
+df_zcta.na$mort_rate_100k <- (df_zcta.na$Deaths / df_zcta.na$Population) * 100000
+df_zcta.na$expected_mort_rate_100k <- (df_zcta.na$exp_deaths / df_zcta.na$Population) * 100000
+hist(df_zcta.na$mort_rate_100k)
+
+county_summary <- df_zcta.na %>%
+  group_by(County, Year) %>%
+  summarise_at(c("Deaths", "exp_deaths"), ~mean(.x))
+
+#Weights
+
+glm_weights <- glmmTMB(Deaths ~ P_PGE70_16_20 + offset(log(zcta_pop)), family = "nbinom1", df_zcta.na) #Model is the same as the county predicted deaths
+summary(glm_weights)
+check_model(glm_weights)
+
+df_zcta.na$risk_score <- (df_zcta.na$P_PGE70_16_20 * 0.05894)
+summary(df_zcta.na$risk_score)
+
+#df_zcta.na$risk_score <- ifelse(df_zcta.na$risk_score <=0, 0.01, df_zcta.na$risk_score)
+
+df_zcta.na <- df_zcta.na %>%
+  group_by(County, Year) %>%
+  mutate(
+    normalized_weight = risk_score / sum(risk_score),  # Normalize risk weights
+    estimated_zcta_deaths = normalized_weight * unique(Deaths), #allocate observed deaths
+    expected_zcta_deaths = normalized_weight * unique(exp_deaths)# Allocate expected deaths
+  )
+
+by(df_zcta.na$estimated_zcta_deaths, df_zcta.na$Year, summary)
+
+by(df_zcta.na$expected_zcta_deaths, df_zcta.na$Year, summary)
+
+# Sum of estimated ZCTA-level deaths within each county
+
+zcta_summary <- df_zcta.na %>%
+  group_by(County, Year) %>%
+  summarise_at("estimated_zcta_deaths", ~sum(.x))
+
+county_summary <- df_zcta.na %>%
+  group_by(County, Year) %>%
+  summarise_at("Deaths", ~mean(.x))
+
+#Creating estimated ZCTA death counts
+
+df_zcta.na$estimated_zcta_death_rate <- (df_zcta.na$estimated_zcta_deaths / df_zcta.na$zcta_pop) * 10000
+df_zcta.na$expected_zcta_death_rate <- (df_zcta.na$expected_zcta_deaths / df_zcta.na$zcta_pop) * 10000
+
+
+# Check differences
+
+df_zcta.na$zcta_excess_mort <- df_zcta.na$estimated_zcta_deaths - df_zcta.na$expected_zcta_deaths
+
+#Dealing with negative  - because we are looking at "excess" mortality, we replace negative predicted mortality numbers with 0. It is possible to have negative excess mortality, especially if these ZCTAs/counties were especiially adherent to public health mandates and measures in preventing spread during the COVID-19 pandemic. This, however, presents a different methodological questions and challenge and is beyond the scope of the current analysis.
+
+df_excess_mort_less_than_0 <- filter(df_zcta.na, zcta_excess_mort < 0)
+
+df_zcta.na$zcta_excess_mort <- ifelse(df_zcta.na$zcta_excess_mort < 0, 0, df_zcta.na$zcta_excess_mort)
+
+#Mortality rate
+
+df_zcta.na$zcta_excess_rate_10k <- (df_zcta.na$zcta_excess_mort / df_zcta.na$zcta_pop) * 10000
+
+```
+
+# index with scales individually
+
+```{r}
+#Obs ZCTA
+
+#Contemporary index 
+
+df_zcta.na$contemp_index <- as.numeric(standardise(df_zcta.na$P_PPUBAS16_20) + standardise(df_zcta.na$P_PUNEMP16_20) + standardise(df_zcta.na$P_medicaid_only) + standardise(df_zcta.na$P_zcta_did_not_wfh))
+
+
+summary(df_zcta.na$contemp_index)
+hist(df_zcta.na$contemp_index)
+
+df_zcta.na$contemp_index_stnd <- standardise(df_zcta.na$contemp_index)
+hist(df_zcta.na$contemp_index_stnd)
+summary(df_zcta.na$contemp_index_stnd)
+
+df_zcta.na$contemp_index_stnd <- df_zcta.na$contemp_index_stnd + -1 * min(df_zcta.na$contemp_index_stnd)
+summary(df_zcta.na$contemp_index_stnd)
+
+
+#Historical index 
+
+df_zcta.na$hist_index <- as.numeric(standardise(df_zcta.na$P_no_bach) + standardise(df_zcta.na$POPDEN16_20)  + standardise(df_zcta.na$P_not_owner_occ) - standardise(df_zcta.na$P_P18_29_16_20)) 
+summary(df_zcta.na$hist_index)
+hist(df_zcta.na$hist_index)
+
+df_zcta.na$hist_index_stnd <- standardise(df_zcta.na$hist_index)
+summary(df_zcta.na$hist_index_stnd)
+df_zcta.na$hist_index_stnd <- df_zcta.na$hist_index_stnd + -1 * min(df_zcta.na$hist_index_stnd)
+summary(df_zcta.na$hist_index_stnd)
+
+
+#Combined index
+
+df_zcta.na$comb_ind <- df_zcta.na$hist_index_stnd + df_zcta.na$contemp_index_stnd
+class(df_zcta.na$comb_ind)
+hist(df_zcta.na$comb_ind)
+summary(df_zcta.na$comb_ind)
+
+
+df_zcta.na$comb_index_stnd <- standardise(df_zcta.na$hist_index_stnd + df_zcta.na$contemp_index_stnd)
+summary(df_zcta.na$comb_index_stnd)
+hist(df_zcta.na$comb_index_stnd)
+
+df_zcta.na$comb_index_stnd <- df_zcta.na$comb_index_stnd + -1 * min(df_zcta.na$comb_index_stnd)
+summary(df_zcta.na$comb_index_stnd)
+
+```
+
+#Dichotomous indices
+
+```{r}
+
+#Historical dichotomous index
+df_zcta.na$hist_dich <- ifelse(df_zcta.na$hist_index_stnd <= mean(df_zcta.na$hist_index_stnd), 0, 1)
+df_zcta.na$hist_dich <- as.factor(df_zcta.na$hist_dich)
+
+#Contemporary dichotomous index
+summary(df_zcta.na$contemp_index_stnd)
+df_zcta.na$contemp_dich <- ifelse(df_zcta.na$contemp_index_stnd <= mean(df_zcta.na$contemp_index_stnd), 0, 1)
+df_zcta.na$contemp_dich <- as.factor(df_zcta.na$contemp_dich)
+
+#Combined dichotomous index
+summary(df_zcta.na$comb_index_stnd)
+df_zcta.na$comb_dich <- ifelse(df_zcta.na$comb_index_stnd <= mean(df_zcta.na$comb_index_stnd), 0, 1)
+df_zcta.na$comb_dich <- as.factor(df_zcta.na$comb_dich)
+
+#Combined quadrant index 
+
+df_zcta.na <- df_zcta.na %>% mutate(
+  comb_quad = case_when(
+    contemp_dich == "0" & hist_dich == "0" ~ "neither",
+    contemp_dich == "0" & hist_dich == "1" ~ "above avg hist disen only",
+    contemp_dich == "1" & hist_dich == "0" ~ "above avg cont disad only",
+    contemp_dich == "1" & hist_dich == "1"~ "above avg in both"
+))
+
+df_zcta.na$comb_quad <- as.factor(df_zcta.na$comb_quad)
+
+```
+
+#Descriptive statistics for each variable
+
+```{r}
+Desc(df_zcta.na)
+```
+
+#Models
+
+```{r}
+#Undajusted
+
+glm0 <- glmmTMB(zcta_excess_mort ~ 1 + offset(log(zcta_pop)), family = tweedie(link = "log"),
+                data = df_zcta.na)
+AIC(glm0)
+check_model(glm0) 
+qqnorm(resid(glm0))
+
+#Binary indices w state and year
+
+glm2 <- glmmTMB(zcta_excess_mort ~ Year + State + offset(log(zcta_pop)), family = tweedie(link = "log"),
+                data = df_zcta.na)
+summary(glm2)
+confint(glm2)
+AIC(glm2)
+glm2 %>% tbl_regression(exponentiate = TRUE)
+check_model(glm2)
+
+glm3 <- glmmTMB(zcta_excess_mort ~ hist_dich + Year + State + offset(log(zcta_pop)), family = tweedie(link = "log"),
+                data = df_zcta.na)
+summary(glm3)
+confint(glm3)
+AIC(glm3)
+glm3 %>% tbl_regression(exponentiate = TRUE)
+check_model(glm3)
+
+glm4 <- glmmTMB(zcta_excess_mort ~ contemp_dich + State + Year + offset(log(zcta_pop)), family = tweedie(link = "log"),
+                data = df_zcta.na)
+summary(glm4)
+confint(glm4)
+AIC(glm4)
+glm4 %>% tbl_regression(exponentiate = TRUE)
+
+glm5 <- glmmTMB(zcta_excess_mort ~ comb_dich + State + Year + offset(log(zcta_pop)), family = tweedie(link = "log"),
+                data = df_zcta.na)
+summary(glm5)
+confint(glm5)
+AIC(glm5)
+glm5 %>% tbl_regression(exponentiate = TRUE)
+check_model(glm5)
+
+
+glm6 <- glmmTMB(zcta_excess_mort ~ relevel(comb_quad, ref = "neither") + State + Year + offset(log(zcta_pop)),  family = tweedie(link = "log"),
+                data = df_zcta.na)
+summary(glm6)
+confint(glm6)
+AIC(glm6)
+glm6 %>% tbl_regression(exponentiate = TRUE)
+check_model(glm6)
+
+```
+
+#combined standard indices, unadjusted
+
+```{r}
+
+glm7 <- glmmTMB(zcta_excess_mort ~ hist_index_stnd + offset(log(zcta_pop)),  family = tweedie(link = "log"),
+                data = df_zcta.na)
+summary(glm7)
+glm7 %>% tbl_regression(exponentiate = TRUE)
+
+
+glm8 <- glmmTMB(zcta_excess_mort ~ contemp_index_stnd +  offset(log(zcta_pop)),  family = tweedie(link = "log"),
+                data = df_zcta.na)
+summary(glm8)
+AIC(glm8)
+glm8 %>% tbl_regression(exponentiate = TRUE)
+
+glm9 <- glmmTMB(zcta_excess_mort ~ comb_index_stnd + offset(log(zcta_pop)),  family = tweedie(link = "log"),
+                data = df_zcta.na)
+summary(glm9)
+BIC(glm9)
+glm9 %>% tbl_regression(exponentiate = TRUE)
+check_model(glm9)
+```
+
+
+#Sensitivity Analyses with race
+
+```{r}
+#Tests for significance
+
+t.test(df_zcta.na$P_PNHBLACK16_20 ~ df_zcta.na$hist_dich)
+t.test(df_zcta.na$P_PNHBLACK16_20 ~ df_zcta.na$contemp_dich)
+
+#Contemporary index with race
+
+df_zcta.na$contemp_index_w_race <- as.numeric(standardise(df_zcta.na$P_PPUBAS16_20) + standardise(df_zcta.na$P_PUNEMP16_20) + standardise(df_zcta.na$P_medicaid_only) + standardise(df_zcta.na$P_zcta_did_not_wfh) + standardise(df_zcta.na$P_PNHBLACK16_20))
+
+summary(df_zcta.na$contemp_index_w_race)
+hist(df_zcta.na$contemp_index)
+
+df_zcta.na$contemp_index_w_race_stnd <- standardise(df_zcta.na$contemp_index_w_race)
+hist(df_zcta.na$contemp_index_w_race_stnd)
+summary(df_zcta.na$contemp_index_w_race_stnd)
+
+df_zcta.na$contemp_index_w_race_stnd <- df_zcta.na$contemp_index_w_race_stnd + -1 * min(df_zcta.na$contemp_index_w_race_stnd)
+summary(df_zcta.na$contemp_index_stnd)
+
+t.test(df_zcta.na$contemp_index_w_race_stnd, df_zcta.na$contemp_index_stnd)
+cor.test(df_zcta.na$contemp_index_w_race_stnd, df_zcta.na$contemp_index_stnd) #.93
+
+#Historical index with race
+
+df_zcta.na$hist_index_w_race <- as.numeric(standardise(df_zcta.na$P_no_bach) + standardise(df_zcta.na$POPDEN16_20)  + standardise(df_zcta.na$P_not_owner_occ) - standardise(df_zcta.na$P_P18_29_16_20) + standardise(df_zcta.na$P_PNHBLACK16_20)) 
+summary(df_zcta.na$hist_index_w_race)
+hist(df_zcta.na$hist_index_w_race)
+
+df_zcta.na$hist_index_w_race_stnd <- standardise(df_zcta.na$hist_index_w_race)
+summary(df_zcta.na$hist_index_w_race_stnd)
+df_zcta.na$hist_index_w_race_stnd <- df_zcta.na$hist_index_w_race_stnd + -1 * min(df_zcta.na$hist_index_w_race_stnd)
+summary(df_zcta.na$hist_index_w_race_stnd)
+
+cor.test(df_zcta.na$hist_index_w_race_stnd, df_zcta.na$hist_index_stnd) #.92
+
+
+#Combined index with race
+
+df_zcta.na$comb_ind_w_race <- df_zcta.na$hist_index_w_race_stnd + df_zcta.na$contemp_index_w_race_stnd
+class(df_zcta.na$comb_ind_w_race)
+hist(df_zcta.na$comb_ind_w_race)
+summary(df_zcta.na$comb_ind_w_race)
+
+
+df_zcta.na$comb_ind_w_race_stnd <- standardise(df_zcta.na$hist_index_w_race_stnd + df_zcta.na$contemp_index_w_race_stnd)
+summary(df_zcta.na$comb_ind_w_race_stnd)
+hist(df_zcta.na$comb_ind_w_race_stnd)
+
+df_zcta.na$comb_ind_w_race_stnd <- df_zcta.na$comb_ind_w_race_stnd + -1 * min(df_zcta.na$comb_ind_w_race_stnd)
+summary(df_zcta.na$comb_ind_w_race_stnd)
+
+cor.test(df_zcta.na$comb_ind_w_race_stnd, df_zcta.na$contemp_index_stnd) #.79
+
+```
+
